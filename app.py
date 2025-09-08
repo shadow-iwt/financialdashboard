@@ -131,7 +131,7 @@ def main():
     
     # Sidebar for navigation
     st.sidebar.title("Navigation")
-    page = st.sidebar.selectbox(
+    page = st.sidebar.radio(
         "Choose a page:",
         ["📊 Overview", "💸 Income vs Expenses", "🏷️ Expense Categories", 
          "💰 Income Allocations", "👥 Client Tracking", "🔄 Recurring Expenses", "📝 Data Entry"]
