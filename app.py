@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import numpy as np
 import os
+import sqlite3
+from database import get_user_data_path, verify_user, create_user
 
 # Page configuration
 st.set_page_config(
@@ -13,6 +15,14 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Session state initialization
+if 'user' not in st.session_state:
+    st.session_state.user = None
+    
+# Set default page if not set
+if 'page' not in st.session_state:
+    st.session_state.page = 'home'
 
 # Custom CSS for better styling
 st.markdown("""
@@ -46,97 +56,153 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Data storage functions
-@st.cache_data
-def load_data():
-    """Load or create sample data files"""
-    data_dir = "data"
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-    
-    # Sample transactions data
-    transactions_file = os.path.join(data_dir, "transactions.csv")
-    if not os.path.exists(transactions_file):
-        sample_transactions = pd.DataFrame({
-            'Date': ['2024-01-15', '2024-01-20', '2024-01-25', '2024-02-01', '2024-02-05'],
-            'Type': ['Income', 'Expense', 'Income', 'Expense', 'Expense'],
-            'Category': ['Client Work', 'Software', 'Digital Store', 'Meals', 'Subscriptions'],
-            'Amount': [5000, 99, 1200, 45, 29.99],
-            'Description': ['Project Alpha', 'Adobe Creative', 'E-book Sales', 'Business Lunch', 'Netflix']
-        })
-        sample_transactions.to_csv(transactions_file, index=False)
-    
-    # Sample client data
-    clients_file = os.path.join(data_dir, "clients.csv")
-    if not os.path.exists(clients_file):
-        sample_clients = pd.DataFrame({
-            'Client': ['ABC Corp', 'XYZ Inc', 'StartupCo'],
-            'Project': ['Website Redesign', 'Mobile App', 'Consulting'],
-            'Amount': [8000, 12000, 5000],
-            'Invoice_Sent': ['2024-01-10', '2024-01-15', '2024-02-01'],
-            'Due_Date': ['2024-02-10', '2024-02-15', '2024-03-01'],
-            'Status': ['Paid', 'Due', 'Sent']
-        })
-        sample_clients.to_csv(clients_file, index=False)
-    
-    # Sample recurring expenses
-    recurring_file = os.path.join(data_dir, "recurring.csv")
-    if not os.path.exists(recurring_file):
-        sample_recurring = pd.DataFrame({
-            'Vendor': ['Adobe', 'Microsoft', 'AWS', 'Insurance'],
-            'Frequency': ['Monthly', 'Annual', 'Monthly', 'Annual'],
-            'Amount': [99, 1200, 50, 2400],
-            'Due_Month': ['January', 'January', 'January', 'January'],
-            'Notes': ['Creative Suite', 'Office 365', 'Cloud hosting', 'Business insurance']
-        })
-        sample_recurring.to_csv(recurring_file, index=False)
-    
-    return transactions_file, clients_file, recurring_file
-
+# Data loading functions
 def load_transactions(file_path):
     """Load transactions data"""
     try:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            # Return empty DataFrame with expected columns
+            return pd.DataFrame(columns=['Date', 'Type', 'Category', 'Amount', 'Description'])
+            
         df = pd.read_csv(file_path)
-        df['Date'] = pd.to_datetime(df['Date'])
+        df['Date'] = pd.to_datetime(df['Date'], format='mixed', errors='coerce')
         return df
     except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as e:
         st.warning(f"Error loading transactions data: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['Date', 'Type', 'Category', 'Amount', 'Description'])
 
 def load_clients(file_path):
     """Load clients data"""
     try:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            # Return empty DataFrame with expected columns
+            return pd.DataFrame(columns=['Client', 'Project', 'Amount', 'Invoice_Sent', 'Due_Date', 'Status'])
+            
         df = pd.read_csv(file_path)
-        df['Invoice_Sent'] = pd.to_datetime(df['Invoice_Sent'])
-        df['Due_Date'] = pd.to_datetime(df['Due_Date'])
+        # Parse dates robustly: accept ISO8601 and plain YYYY-MM-DD strings
+        df['Invoice_Sent'] = pd.to_datetime(df['Invoice_Sent'], format='mixed', errors='coerce')
+        df['Due_Date'] = pd.to_datetime(df['Due_Date'], format='mixed', errors='coerce')
         return df
     except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as e:
         st.warning(f"Error loading clients data: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['Client', 'Project', 'Amount', 'Invoice_Sent', 'Due_Date', 'Status'])
 
 def load_recurring(file_path):
     """Load recurring expenses data"""
     try:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            # Return empty DataFrame with expected columns
+            return pd.DataFrame(columns=['Vendor', 'Frequency', 'Amount', 'Due_Month', 'Notes'])
+            
         return pd.read_csv(file_path)
     except (FileNotFoundError, pd.errors.EmptyDataError, pd.errors.ParserError) as e:
         st.warning(f"Error loading recurring expenses data: {e}")
-        return pd.DataFrame()
+        return pd.DataFrame(columns=['Vendor', 'Frequency', 'Amount', 'Due_Month', 'Notes'])
 
-# Main app
-def main():
-    st.markdown('<h1 class="main-header">💰 Financial Dashboard</h1>', unsafe_allow_html=True)
+
+# Authentication functions
+def show_login():
+    st.title("🔑 Login")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Login")
+        
+        if submit:
+            if verify_user(username, password):
+                st.session_state.user = username
+                st.session_state.page = 'dashboard'
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
     
-    # Load data files
-    transactions_file, clients_file, recurring_file = load_data()
+    if st.button("Don't have an account? Register"):
+        st.session_state.page = 'register'
+        st.rerun()
+
+def show_register():
+    st.title("📝 Register")
+    with st.form("register_form"):
+        username = st.text_input("Choose a username")
+        password = st.text_input("Choose a password", type="password")
+        confirm_password = st.text_input("Confirm password", type="password")
+        submit = st.form_submit_button("Register")
+        
+        if submit:
+            if password != confirm_password:
+                st.error("Passwords do not match")
+            elif len(password) < 6:
+                st.error("Password must be at least 6 characters")
+            else:
+                if create_user(username, password):
+                    st.success("Account created successfully! Please login.")
+                    st.session_state.page = 'login'
+                    st.rerun()
+                else:
+                    st.error("Username already exists")
+    
+    if st.button("Back to Login"):
+        st.session_state.page = 'login'
+        st.rerun()
+
+def show_home():
+    st.title("💰 Welcome to Financial Dashboard")
+    st.write("A simple and powerful tool to manage your personal finances")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("New User?")
+        st.write("Create an account to get started")
+        if st.button("Register Now"):
+            st.session_state.page = 'register'
+            st.rerun()
+    
+    with col2:
+        st.subheader("Returning User?")
+        st.write("Login to access your dashboard")
+        if st.button("Login"):
+            st.session_state.page = 'login'
+            st.rerun()
+
+def show_dashboard():
+    # Load user-specific data files
+    if not st.session_state.user:
+        st.session_state.page = 'login'
+        st.rerun()
+        return
+    
+    transactions_file = get_user_data_path(st.session_state.user, "transactions.csv")
+    clients_file = get_user_data_path(st.session_state.user, "clients.csv")
+    recurring_file = get_user_data_path(st.session_state.user, "recurring.csv")
+    
+    # Initialize data files if they don't exist
+    if not os.path.exists(transactions_file):
+        with open(transactions_file, 'w') as f:
+            f.write("Date,Type,Category,Amount,Description\n")
+    if not os.path.exists(clients_file):
+        with open(clients_file, 'w') as f:
+            f.write("Client,Project,Amount,Invoice_Sent,Due_Date,Status\n")
+    if not os.path.exists(recurring_file):
+        with open(recurring_file, 'w') as f:
+            f.write("Vendor,Frequency,Amount,Due_Month,Notes\n")
     
     # Sidebar for navigation
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio(
-        "Choose a page:",
-        ["📊 Overview", "💸 Income vs Expenses", "🏷️ Expense Categories", 
-         "💰 Income Allocations", "👥 Client Tracking", "🔄 Recurring Expenses", "📝 Data Entry"]
-    )
+    with st.sidebar:
+        st.title(f"Welcome, {st.session_state.user}")
+        st.subheader("Navigation")
+        
+        menu = ["📊 Overview", "💸 Income vs Expenses", "🏷️ Expense Categories", 
+                "💰 Income Allocations", "👥 Client Tracking", "🔄 Recurring Expenses", "📝 Data Entry"]
+        
+        page = st.radio("", menu)
+        
+        if st.button("🚪 Logout"):
+            st.session_state.user = None
+            st.session_state.page = 'home'
+            st.rerun()
     
+    # Main content area
     if page == "📊 Overview":
         show_overview(transactions_file, clients_file, recurring_file)
     elif page == "💸 Income vs Expenses":
@@ -151,6 +217,120 @@ def main():
         show_recurring_expenses(recurring_file)
     elif page == "📝 Data Entry":
         show_data_entry(transactions_file, clients_file, recurring_file)
+
+# Navigation component
+def show_navigation():
+    # Create a container for the navigation
+    col1, col2 = st.columns([1, 4])
+    
+    with col1:
+        if st.button("💰 Financial Dashboard"):
+            st.session_state.page = 'home'
+            st.rerun()
+    
+    with col2:
+        # Create a row of navigation buttons
+        cols = st.columns(5)
+        with cols[0]:
+            if st.button("🏠 Home"):
+                st.session_state.page = 'home'
+                st.rerun()
+        with cols[1]:
+            if st.button("ℹ️ About"):
+                st.session_state.page = 'about'
+                st.rerun()
+        with cols[2]:
+            if st.button("📞 Contact"):
+                st.session_state.page = 'contact'
+                st.rerun()
+        with cols[3]:
+            if st.button("🔑 Login"):
+                st.session_state.page = 'login'
+                st.rerun()
+        with cols[4]:
+            if st.button("📝 Register", type="primary"):
+                st.session_state.page = 'register'
+                st.rerun()
+    
+    # Add some spacing
+    st.markdown("---")
+
+# Main app routing
+def main():
+    # Custom CSS for better styling
+    st.markdown("""
+    <style>
+        .main-header {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #1f77b4;
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .metric-card {
+            background-color: #f0f2f6;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border-left: 4px solid #1f77b4;
+        }
+        .kpi-container {
+            display: flex;
+            justify-content: space-around;
+            margin: 1rem 0;
+        }
+        .kpi-item {
+            text-align: center;
+            padding: 1rem;
+            background-color: #ffffff;
+            border-radius: 0.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin: 0.5rem;
+        }
+        .stButton>button {
+            width: 100%;
+            margin: 5px 0;
+        }
+        /* Remove default Streamlit menu */
+        #MainMenu {visibility: hidden;}
+        header {visibility: hidden;}
+        footer {visibility: hidden;}
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Show navigation for all pages except dashboard
+    if not st.session_state.get('user'):
+        show_navigation()
+    
+    # Page routing
+    if st.session_state.page == 'home':
+        show_home()
+    elif st.session_state.page == 'login':
+        show_login()
+    elif st.session_state.page == 'register':
+        show_register()
+    elif st.session_state.page == 'dashboard':
+        show_dashboard()
+    elif st.session_state.page == 'about':
+        # Dynamic import for the about page
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "about_page", 
+            "pages/2_ℹ️_About_Us.py"
+        )
+        about_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(about_module)
+        about_module.show()
+        
+    elif st.session_state.page == 'contact':
+        # Dynamic import for the contact page
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "contact_page", 
+            "pages/3_📞_Contact_Us.py"
+        )
+        contact_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(contact_module)
+        contact_module.show()
 
 def show_overview(transactions_file, clients_file, recurring_file):
     """Show dashboard overview with key metrics"""
@@ -527,7 +707,7 @@ def show_data_entry(transactions_file, clients_file, recurring_file):
                         'Amount': [amount],
                         'Invoice_Sent': [invoice_sent],
                         'Due_Date': [due_date],
-                        'Status': [status]
+                        'Status': [status] 
                     })
                     
                     existing_data = load_clients(clients_file)
